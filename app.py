@@ -72,12 +72,12 @@ def run_pipeline(q):
         for warning in retraction_warnings:
             st.write(f"  - :red-badge[**{warning}**]")
 
-        # ---- STEP 3: freshness / retraction review ----------------------------
-        st.write("**3. Reviewing freshness of retrieved evidence**")
+        # ---- STEP 3: freshness / design review --------------------------------
+        st.write("**3. Reviewing freshness & study design of retrieved evidence**")
         for r in results:
             pub = r.get("publish_date") or "unknown date"
             st.write(
-                f"  - [{r['source']}] {r['freshness_label']} "
+                f"  - [{r['source']}] {r['design']} | {r['freshness_label']} "
                 f"({pub}) | {r['title'][:70]}"
             )
 

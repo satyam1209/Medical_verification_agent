@@ -13,27 +13,41 @@ load_dotenv()
 from groq import Groq
 
 from retrieve import search_kb
+from evidence import group_overlaps, evidence_profile, parse_pico
 
 SYSTEM_PROMPT = """\
-You are a medical evidence verification assistant. You will be given a user question and a set of numbered source excerpts from PubMed papers, ClinicalTrials.gov trials, and openFDA adverse event reports. Your job is to answer the question using ONLY the provided sources. Rules:
-1. Cite sources using [Source N] notation for every factual claim.
-2. If openFDA sources show a drug as 'CONCOMITANT DRUG (not primary suspect)', explicitly state that this drug was NOT the primary suspect for that reaction, and name the actual primary suspect drug if given.
-3. If sources conflict or evidence is thin (e.g. only 1 source, or old data), explicitly say so.
-4. Do NOT use any outside knowledge beyond the provided sources.
-5. End your answer with a confidence label: STRONG EVIDENCE (multiple consistent sources), MODERATE EVIDENCE (some support but limited), or WEAK EVIDENCE (thin, conflicting, or only concomitant data).
-6. Before giving your final confidence label, explicitly list: (a) how many distinct sources support the main claim, (b) whether any source presents a different magnitude, timeframe, or conclusion, and (c) whether the evidence is from case reports (weaker) versus clinical trials or systematic reviews (stronger)."""
+You are a medical evidence verifier applying Evidence-Based Medicine (EBM) methodology. You will be given a user question, a PICO decomposition, an evidence profile of the retrieved sources, and numbered source excerpts from PubMed papers, ClinicalTrials.gov trials, and openFDA adverse event reports. Answer the question using ONLY the provided sources.
+
+EBM Principles you MUST follow:
+1. Identify PICO (Population, Intervention, Comparator, Outcome) for the question before answering.
+2. Weigh evidence by study design hierarchy, not by raw source count: RCTs & systematic reviews/meta-analyses > prospective cohort > retrospective cohort/case-control > case reports/narrative reviews/adverse-event reports.
+3. Do NOT treat overlapping or redundant analyses as independent evidence; if two sources are the same or overlapping meta-analyses/trials, count them as ONE line of evidence and say so.
+4. Report effect size with 95% CI, sample size, and (when given) absolute measures such as NNT/ARR. Never invent numbers not in the excerpt.
+5. Distinguish relative from absolute effects, composite from individual endpoints, and surrogate from clinical outcomes.
+6. Explicitly separate EFFICACY evidence from SAFETY evidence; an adverse-event report supports a risk claim, not a benefit claim.
+7. In observational studies (cohort, case-control, cross-sectional, AE reports) state association-to-causation limitations; do not claim causation.
+8. Report heterogeneity (I-squared), risk of bias, and indirectness IF the excerpt states them; otherwise state they are unavailable.
+9. Do not generalize beyond the study population, dose, formulation, drug, or endpoint presented in the excerpts.
+10. Explicitly state contradictory or negative evidence when present; do not cherry-pick supporting sources.
+11. Base your final confidence label on evidence quality, consistency, precision (CIs), directness, and limitations — NOT on source count alone.
+12. Make the final conclusion NO STRONGER or BROADER than the underlying evidence.
+
+Output format:
+- Start with a 1-line PICO restatement of the question.
+- Body: cite [Source N] for every factual claim.
+- Before the confidence label, list: (a) number of INDEPENDENT evidence lines with their designs; (b) consistency/direction across sources; (c) precision (which sources report 95% CIs) and directness; (d) limitations (heterogeneity, bias, indirectness) if reported; (e) efficacy vs safety split.
+- End with exactly one of: "Confidence: STRONG EVIDENCE", "Confidence: MODERATE EVIDENCE", or "Confidence: WEAK EVIDENCE", followed by a short justification in parentheses based on (a)-(e)."""
 
 GROQ_MODEL = "openai/gpt-oss-120b"
 
 client = Groq()
 
 
-def build_context(query: str, top_k: int = 8):
-    results = search_kb(query, top_k=top_k, truncate=False)
-
+def _format_entries(results):
     entries = []
     for i, r in enumerate(results, 1):
         source_label = r["source"].upper()
+
         meta = r.get("metadata_json")
         suspect_tag = ""
         if meta and isinstance(meta, str):
@@ -56,18 +70,78 @@ def build_context(query: str, top_k: int = 8):
         else:
             freshness_frag = f"({label})"
 
+        design = r.get("design") or "UNKNOWN"
+        flags = []
+        if r.get("negative_result"):
+            flags.append("NEGATIVE/NULL RESULT")
+        if r.get("evidence_kind"):
+            flags.append(r["evidence_kind"].upper())
+        stats = r.get("stats") or {}
+        stat_frag = ""
+        if stats.get("effect_size") and stats.get("ci"):
+            es = stats["effect_size"]
+            lo, hi = stats["ci"]
+            stat_frag = f" | {es['kind']} {es['est']} (95% CI {lo}-{hi})"
+        if stats.get("sample_size") and stat_frag:
+            stat_frag += f" | n={stats['sample_size']}"
+
         entry = (
-            f"[Source {i}] {source_label} | {freshness_frag} | {r['title']} | "
+            f"[Source {i}] {source_label} | {design} | {freshness_frag}"
+            f"{stat_frag} | {r['title']} | {'; '.join(flags) + ' | ' if flags else ''}"
             f"{r['text']} | URL: {r['url']}{suspect_tag}"
         )
         entries.append(entry)
+    return entries
 
-    return "\n\n".join(entries)
+
+def build_context(query: str, top_k: int = 8):
+    results = search_kb(query, top_k=top_k, truncate=False)
+    entries = _format_entries(results)
+
+    context = "\n\n".join(entries)
+
+    overlap_groups = group_overlaps(results)
+    if overlap_groups:
+        notices = []
+        for group in overlap_groups:
+            refs = ", ".join(f"Source {i}" for i in group)
+            notices.append(
+                f"NOTE: {refs} are overlapping/redundant analyses — treat them as "
+                f"ONE independent line of evidence, do not double-count."
+            )
+        context += "\n\n" + "\n".join(notices)
+
+    return context
 
 
 def build_user_message(query: str, top_k: int = 8):
-    context = build_context(query, top_k=top_k)
-    return f"{context}\n\n---\nQuestion: {query}"
+    results = search_kb(query, top_k=top_k, truncate=False)
+    entries = _format_entries(results)
+    context = "\n\n".join(entries)
+
+    override_lines = []
+    overlap_groups = group_overlaps(results)
+    if overlap_groups:
+        for group in overlap_groups:
+            refs = ", ".join(f"Source {i}" for i in group)
+            override_lines.append(
+                f"NOTE: {refs} are overlapping/redundant analyses — treat them as "
+                f"ONE independent line of evidence, do not double-count."
+            )
+        context += "\n\n" + "\n".join(override_lines)
+
+    profile = evidence_profile(results)
+    pico = parse_pico(query)
+    pico_str = (
+        f"PICO: Population={pico['population'] or 'not stated'}; "
+        f"Intervention={pico['intervention'] or 'not stated'}; "
+        f"Comparator={pico['comparator'] or 'not stated'}; "
+        f"Outcome={pico['outcome'] or 'not stated'}"
+    )
+    return (
+        f"{context}\n\n---\n{pico_str}\n\nEvidence profile:\n{profile}\n\n"
+        f"Question: {query}"
+    )
 
 
 def synthesize_answer(query: str):

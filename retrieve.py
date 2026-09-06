@@ -16,6 +16,7 @@ from fastembed import TextEmbedding
 
 from check_retraction import check_retraction_status
 from freshness import freshness_assessment as check_freshness
+from evidence import characterize_record
 
 QDRANT_COLLECTION = "medverify_kb"
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
@@ -59,7 +60,7 @@ def search_kb(query: str, top_k: int = 5, source_filter: str = None, truncate: b
         text = payload.get("text", "") or ""
         if truncate and len(text) > DISPLAY_TEXT_CHARS:
             text = text[:DISPLAY_TEXT_CHARS] + "..."
-        results.append({
+        record = {
             "id": payload.get("id"),
             "score": round(point.score, 6),
             "source": payload.get("source"),
@@ -68,8 +69,11 @@ def search_kb(query: str, top_k: int = 5, source_filter: str = None, truncate: b
             "text": text,
             "url": payload.get("url"),
             "publish_date": payload.get("publish_date"),
+            "metadata_json": payload.get("metadata_json"),
             "freshness_label": check_freshness(payload.get("publish_date"))["category"],
-        })
+        }
+        record.update(characterize_record(record))
+        results.append(record)
 
     results = _exclude_retracted_pubmed(results)
     return results
