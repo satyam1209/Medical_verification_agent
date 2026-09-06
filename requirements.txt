@@ -1,0 +1,9 @@
+requests
+python-dotenv
+pandas
+biopython
+qdrant-client
+fastembed
+sqlalchemy
+httpx
+groq
