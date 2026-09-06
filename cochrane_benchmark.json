@@ -1,0 +1,66 @@
+[
+  {
+    "id": 1,
+    "question": "does metformin cause vitamin B12 deficiency and how significant is it",
+    "topic_for_ingestion": "metformin vitamin B12 deficiency",
+    "cochrane_conclusion": "Long-term metformin use is associated with reduced vitamin B12 levels and increased risk of deficiency, though absolute risk varies across studies; some large recent studies report only a modest, non-significant increase while smaller observational studies and case reports show higher rates and clinically significant cases (e.g. subacute combined degeneration).",
+    "cochrane_confidence": "MODERATE",
+    "cochrane_source_url": "https://pubmed.ncbi.nlm.nih.gov/25814168/"
+  },
+  {
+    "id": 2,
+    "question": "does metformin help with weight loss in women with PCOS",
+    "topic_for_ingestion": "metformin PCOS weight loss",
+    "cochrane_conclusion": "A 2020 Cochrane review of 44 trials (3,992 women with PCOS) found metformin reduced body weight by approximately 4.0 kg compared to placebo over 6-12 months, with larger effects in women with higher baseline BMI.",
+    "cochrane_confidence": "MODERATE",
+    "cochrane_source_url": "https://www.cochranelibrary.com/cdsr/doi/10.1002/14651858.CD003053.pub6/full"
+  },
+  {
+    "id": 3,
+    "question": "does vitamin D supplementation combined with calcium prevent fractures in older adults",
+    "topic_for_ingestion": "vitamin D calcium supplementation fracture prevention",
+    "cochrane_conclusion": "Vitamin D supplementation alone (without calcium), in the doses and formulations tested, is unlikely to prevent hip or other fractures in older adults. However, vitamin D combined with calcium supplements shows a small but significant reduction in fracture risk.",
+    "cochrane_confidence": "STRONG",
+    "cochrane_source_url": "https://www.cochrane.org/evidence/CD000227_vitamin-d-and-related-vitamin-d-compounds-preventing-fractures-resulting-osteoporosis-older-people"
+  },
+  {
+    "id": 4,
+    "question": "do probiotics prevent antibiotic-associated diarrhea in children",
+    "topic_for_ingestion": "probiotics antibiotic-associated diarrhea children",
+    "cochrane_conclusion": "Moderate-quality evidence shows probiotics (particularly Lactobacillus rhamnosus or Saccharomyces boulardii at high doses) reduce the incidence of antibiotic-associated diarrhea in children, with a number-needed-to-treat of approximately 6-10. Evidence for other probiotic strains remains insufficient to draw firm conclusions.",
+    "cochrane_confidence": "MODERATE",
+    "cochrane_source_url": "https://www.cochranelibrary.com/cdsr/doi/10.1002/14651858.CD004827.pub5/full"
+  },
+  {
+    "id": 5,
+    "question": "does aspirin prevent cardiovascular events when used for primary prevention",
+    "topic_for_ingestion": "aspirin primary prevention cardiovascular disease",
+    "cochrane_conclusion": "Aspirin reduces the risk of nonfatal myocardial infarction in primary prevention (RR ~0.78) at low doses (100mg or less), but shows little or no benefit on cardiovascular mortality or all-cause mortality, and increases bleeding risk. The overall effect is modest, and benefits must be weighed against bleeding harms.",
+    "cochrane_confidence": "MODERATE",
+    "cochrane_source_url": "https://pubmed.ncbi.nlm.nih.gov/27064410/"
+  },
+  {
+    "id": 6,
+    "question": "do statins reduce cardiovascular events and mortality when used for primary prevention",
+    "topic_for_ingestion": "statins primary prevention cardiovascular disease",
+    "cochrane_conclusion": "A Cochrane review of 18 randomized controlled trials (56,934 participants) found statins reduced all-cause mortality (OR 0.86) and combined fatal/non-fatal cardiovascular events (RR 0.75) in primary prevention, with no evidence of serious harm. This is considered a well-established, high-certainty benefit.",
+    "cochrane_confidence": "STRONG",
+    "cochrane_source_url": "https://www.cochrane.org/evidence/CD004816_statins-primary-prevention-cardiovascular-disease"
+  },
+  {
+    "id": 7,
+    "question": "does zinc supplementation shorten the duration of the common cold",
+    "topic_for_ingestion": "zinc supplementation common cold duration",
+    "cochrane_conclusion": "A 2024 Cochrane review of 34 studies (8,526 participants) found zinc may reduce the duration of an ongoing cold by about 2 days, but this is based on low-certainty evidence with high heterogeneity across trials. Zinc showed little or no effect on preventing colds from occurring, and evidence was insufficient for firm conclusions or recommendations.",
+    "cochrane_confidence": "WEAK",
+    "cochrane_source_url": "https://www.cochranelibrary.com/cdsr/doi/10.1002/14651858.CD014914.pub2/full"
+  },
+  {
+    "id": 8,
+    "question": "do omega-3 fatty acid supplements reduce cardiovascular disease risk",
+    "topic_for_ingestion": "omega-3 fatty acids cardiovascular disease prevention",
+    "cochrane_conclusion": "A 2020 Cochrane review of 86 trials (162,796 participants) found increasing long-chain omega-3 (EPA/DHA) intake has little or no effect on all-cause mortality, cardiovascular mortality, or cardiovascular events (high to moderate-certainty evidence). This directly contradicts earlier observational evidence suggesting benefit.",
+    "cochrane_confidence": "STRONG",
+    "cochrane_source_url": "https://www.cochranelibrary.com/cdsr/doi/10.1002/14651858.CD003177.pub5/full"
+  }
+]

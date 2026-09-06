@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+medverify.db
+output.txt
+benchmark_results.json
