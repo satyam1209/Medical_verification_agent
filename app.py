@@ -21,9 +21,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from ingest import DEFAULT_TTL_HOURS, ingest_topic
-from retrieve import clear_search_cache, search_kb
+from retrieve import clear_search_cache, search_kb_staged
 from synthesize import build_user_message, synthesize_answer_stream
-from evidence import outcome_category, pico_component_coverage, parse_pico
+from evidence import assess_coverage, outcome_category, pico_component_coverage, parse_pico
 
 st.set_page_config(page_title="MedVerify", page_icon=":medical_symbol:", layout="centered")
 
@@ -80,12 +80,23 @@ def run_pipeline(q, refresh=False):
         if refresh:
             clear_search_cache()
 
-        # ---- STEP 2: retrieval ------------------------------------------------
-        st.write("**2. Retrieving most relevant evidence**")
+        # ---- STEP 2: multi-stage retrieval -------------------------------------
+        st.write("**2. Retrieving evidence (multi-stage)**")
         stdout_capture = io.StringIO()
         with contextlib.redirect_stdout(stdout_capture):
-            results = search_kb(q, top_k=8, truncate=False)
-        st.write(f"  - Retrieved **{len(results)}** evidence items from the KB")
+            results = search_kb_staged(q, top_k=8, truncate=False)
+        semantic = sum(1 for r in results if r.get("retrieval_stage") == "semantic")
+        targeted = len(results) - semantic
+        cov = assess_coverage(results)
+        st.write(
+            f"  - Retrieved **{len(results)}** items "
+            f"({semantic} semantic, {targeted} targeted-to-fill-missing-types)"
+        )
+        st.write(
+            f"  - Evidence coverage: **{cov['level']}** "
+            f"({cov['count']}/{len(cov['present'])} types present); "
+            f"missing: {', '.join(cov['missing']) or 'none'}"
+        )
 
         retraction_warnings = [
             line for line in stdout_capture.getvalue().splitlines()

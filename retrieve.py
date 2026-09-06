@@ -17,7 +17,7 @@ from fastembed import TextEmbedding
 
 from check_retraction import check_retraction_status
 from freshness import freshness_assessment as check_freshness
-from evidence import characterize_record
+from evidence import COVERAGE_TARGETED_SUFFIXES, assess_coverage, characterize_record
 
 QDRANT_COLLECTION = "medverify_kb"
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
@@ -49,11 +49,13 @@ def search_kb(query: str, top_k: int = 5, source_filter: str = None, truncate: b
         return hit[1]
 
     results = _search_kb_uncached(query, top_k, source_filter, truncate)
+    results = _exclude_retracted_pubmed(results)
     _search_cache[cache_key] = (time.time(), results)
     return results
 
 
-def _search_kb_uncached(query: str, top_k: int = 5, source_filter: str = None, truncate: bool = True):
+def _search_kb_uncached(query: str, top_k: int = 5, source_filter: str = None,
+                        truncate: bool = True, retrieval_stage: str = "semantic"):
     query_vector = _embed(query)
 
     query_filter = None
@@ -93,10 +95,57 @@ def _search_kb_uncached(query: str, top_k: int = 5, source_filter: str = None, t
             "freshness_label": check_freshness(payload.get("publish_date"))["category"],
         }
         record.update(characterize_record(record))
+        record["retrieval_stage"] = retrieval_stage
         results.append(record)
 
-    results = _exclude_retracted_pubmed(results)
     return results
+
+
+def search_kb_staged(query: str, top_k: int = 8, truncate: bool = False,
+                     extra_per_type: int = 5):
+    """Multi-stage retrieval (evidence rule #3).
+
+    Stage 1: semantic search for the query.
+    Stage 2: coverage check on the stage-1 set; for important evidence types
+    that are MISSING (SR/MA, RCT, observational, guidelines, safety), run
+    targeted semantic queries and merge new (source, id) records, up to a
+    bounded budget.
+    A single retraction-exclusion pass runs over the merged set.
+    """
+    cache_key = ("staged", query, top_k, truncate, extra_per_type)
+    hit = _search_cache.get(cache_key)
+    if hit and (time.time() - hit[0]) < SEARCH_CACHE_TTL_SECONDS:
+        return hit[1]
+
+    stage_one = _search_kb_uncached(query, top_k, None, truncate)
+    coverage = assess_coverage(stage_one)
+
+    seen = {(r["source"], r["id"]) for r in stage_one}
+    extra = []
+    for type_key in ("SR/MA", "RCT", "OBSERVATIONAL", "GUIDELINES", "SAFETY"):
+        if coverage["present"].get(type_key):
+            continue
+        suffix = COVERAGE_TARGETED_SUFFIXES.get(type_key)
+        if not suffix:
+            continue
+        targeted_query = f"{query} {suffix}"
+        candidates = _search_kb_uncached(
+            targeted_query, extra_per_type, None, truncate,
+            retrieval_stage=f"targeted:{type_key}",
+        )
+        for c in candidates:
+            key = (c["source"], c["id"])
+            if key in seen:
+                continue
+            seen.add(key)
+            extra.append(c)
+            if len(extra) >= 12:
+                break
+
+    merged = stage_one + extra
+    merged = _exclude_retracted_pubmed(merged)
+    _search_cache[cache_key] = (time.time(), merged)
+    return merged
 
 
 def _exclude_retracted_pubmed(results):

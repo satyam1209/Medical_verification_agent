@@ -50,11 +50,26 @@ async def ensure_ingested(topic):
 
 
 def extract_confidence(answer_text):
-    """Return the last-occurring confidence label in the answer, case-insensitive.
+    """Return the FINAL Confidence label from the answer.
 
-    Uses a regex from the whole text and takes the LAST match by position
-    (the final label usually appears at the end of the answer).
+    The authoritative label is on the last 'Confidence:' line.  The new answer
+    schema may also contain 'Retrieved evidence certainty: STRONG EVIDENCE',
+    so a plain whole-text regex would select the wrong value; anchor on the
+    final Confidence line and fall back to last-position matching for legacy
+    answers.
     """
+    if not answer_text:
+        return None
+    final = re.findall(
+        r"Confidence:\s*(OVERALL CERTAINTY CANNOT BE DETERMINED FROM THE "
+        r"RETRIEVED EVIDENCE|STRONG EVIDENCE|MODERATE EVIDENCE|WEAK EVIDENCE)",
+        answer_text,
+        re.IGNORECASE,
+    )
+    if final:
+        label = final[-1].upper()
+        return "CANNOT DETERMINE" if label.startswith("OVERALL") else label
+
     matches = re.findall(r"(STRONG|MODERATE|WEAK)\s*EVIDENCE", answer_text, re.IGNORECASE)
     if not matches:
         return None

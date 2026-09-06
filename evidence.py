@@ -137,6 +137,94 @@ def characterize_record(record):
     }
 
 
+# ---------------------------------------------------------------------------
+# Evidence-coverage assessment (multi-stage retrieval rule #2 / #3 / #11)
+# ---------------------------------------------------------------------------
+_GUIDELINE_RE = re.compile(
+    r"guideline|clinical practice guideline|consensus statement|recommendation|"
+    r"NICE|ACC/AHA|ESC |European Society|American College|CDC|WHO ",
+    re.IGNORECASE,
+)
+_MODELING_RE = re.compile(
+    r"\bmodeled\b|\bmodelled\b|simulation|projection|estimates? of|"
+    r"avoided fatalities|deaths averted",
+    re.IGNORECASE,
+)
+
+COVERAGE_TYPES = {
+    "SR/MA": "systematic reviews / meta-analyses",
+    "RCT": "randomized controlled trials / major trials",
+    "OBSERVATIONAL": "observational studies",
+    "GUIDELINES": "guidelines / recommendations",
+    "SAFETY": "safety / harms",
+    "RECENT": "recent evidence (≤5 yr)",
+}
+
+COVERAGE_TARGETED_SUFFIXES = {
+    "SR/MA": "systematic review meta-analysis randomized controlled trial",
+    "RCT": "randomized controlled trial placebo controlled",
+    "OBSERVATIONAL": "prospective cohort observational",
+    "GUIDELINES": "clinical practice guidelines recommendations",
+    "SAFETY": "adverse events safety harms serious",
+}
+
+
+def evidence_types_of(record):
+    """Evidence categories a retrieved record contributes to (rule #2)."""
+    design = record.get("design") or ""
+    hay = f"{record.get('title') or ''} {record.get('text') or ''}"
+    kinds = set()
+    if design in ("SYSTEMATIC REVIEW / META-ANALYSIS",):
+        kinds.add("SR/MA")
+    if design == "RCT (published)" or record.get("source") == "clinicaltrials":
+        kinds.add("RCT")
+    if design in (
+        "PROSPECTIVE COHORT", "RETROSPECTIVE COHORT",
+        "CASE-CONTROL", "CROSS-SECTIONAL",
+    ):
+        kinds.add("OBSERVATIONAL")
+    if _GUIDELINE_RE.search(hay):
+        kinds.add("GUIDELINES")
+    if "safety" in (record.get("evidence_kind") or ""):
+        kinds.add("SAFETY")
+    if (record.get("freshness_label") or "") in ("FRESH", "RECENT"):
+        kinds.add("RECENT")
+    return kinds
+
+
+def assess_coverage(results):
+    """Machine coverage hint: which evidence types are present among retrieved
+    results, and a COMPLETE / PARTIAL / INCOMPLETE verdict.  This is an
+    evidence-RETRIEVAL assessment, never a statement about the strength of the
+    evidence itself."""
+    present = {}
+    for key in COVERAGE_TYPES:
+        present[key] = any(key in evidence_types_of(r) for r in results)
+    count = sum(present.values())
+    has_strong = present.get("SR/MA") or present.get("RCT")
+    if has_strong and count >= 4 and present.get("RECENT"):
+        level = "COMPLETE"
+    elif count >= 3:
+        level = "PARTIAL"
+    else:
+        level = "INCOMPLETE"
+    missing = [k for k, v in present.items() if not v]
+    return {"present": present, "count": count, "level": level, "missing": missing}
+
+
+def coverage_line(results):
+    cov = assess_coverage(results)
+    present_str = ", ".join(
+        f"{COVERAGE_TYPES[k]}{'=present' if v else '=missing'}"
+        for k, v in cov["present"].items()
+    )
+    return (f"Evidence coverage (machine hint): {cov['level']} "
+            f"({cov['count']}/{len(COVERAGE_TYPES)} types present) "
+            f"- {present_str}. This is an attendance/completeness check on the "
+            f"RETRIEVED set only; a missing type means it was not retrieved, not "
+            f"that it does not exist.")
+
+
 def _norm_title(t):
     return re.sub(r"[^a-z0-9]", "", (t or "").lower())
 
@@ -337,6 +425,8 @@ def evidence_profile(results, pico=None):
                      f"outcome, and do not report modeled/estimated effects as "
                      f"observed effects.")
         lines.append(completeness_judgement(pico, coverage, len(results), distinct_designs))
+
+    lines.append(coverage_line(results))
 
     return "\n".join(lines)
 
