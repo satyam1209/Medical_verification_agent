@@ -20,8 +20,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from ingest import ingest_topic
-from retrieve import search_kb
+from ingest import DEFAULT_TTL_HOURS, ingest_topic
+from retrieve import clear_search_cache, search_kb
 from synthesize import build_user_message, synthesize_answer_stream
 
 st.set_page_config(page_title="MedVerify", page_icon=":medical_symbol:", layout="centered")
@@ -39,24 +39,45 @@ query = st.text_input(
 )
 run = st.button("Run verification", type="primary", use_container_width=True)
 
+with st.expander("Data freshness"):
+    st.caption(
+        "Knowledge bases refresh automatically: a topic re-pulls recent studies "
+        f"once it is older than the {DEFAULT_TTL_HOURS}h TTL, so answers never rely "
+        "on a stale snapshot. Tick the box below to force a full refresh now."
+    )
+    force_refresh = st.checkbox("Force full refresh from sources for this query",
+                                value=False)
 
-def step(status_box, text):
-    status_box.write(f"- {text}")
 
-
-def run_pipeline(q):
+def run_pipeline(q, refresh=False):
     with st.status("Running the evidence pipeline…", expanded=True) as status:
 
         # ---- STEP 1: ingestion ------------------------------------------------
-        st.write("**1. Searching datasets**")
-        summary = asyncio.run(ingest_topic(q, max_results=15))
-        for source_name, count in summary["fetched"].items():
-            st.write(f"  - {source_name}: fetched **{count}** records")
-        st.write(
-            f"  - Knowledge base update complete "
-            f"(inserted {summary['inserted']}, "
-            f"skipped existing {summary['skipped']})"
+        st.write("**1. Updating knowledge base**")
+        summary = asyncio.run(
+            ingest_topic(q, max_results=15, force_refresh=refresh)
         )
+        if summary.get("cached"):
+            st.write(
+                f"  - Topic knowledge base already current "
+                f"(ingested {summary['last_ingested_at']}); cached evidence used "
+                f"— data is younger than the {DEFAULT_TTL_HOURS}h TTL"
+            )
+        else:
+            since_note = (
+                f" (incremental since {summary['since']})"
+                if summary.get("mode") == "incremental"
+                else " (full)"
+            )
+            st.write(f"  - Refreshing sources{since_note}")
+            for source_name, count in summary["fetched"].items():
+                st.write(f"  - {source_name}: fetched **{count}** records")
+        st.write(
+            f"  - Knowledge base state: {summary['inserted']} new, "
+            f"{summary['skipped']} already present"
+        )
+        if refresh:
+            clear_search_cache()
 
         # ---- STEP 2: retrieval ------------------------------------------------
         st.write("**2. Retrieving most relevant evidence**")
@@ -96,7 +117,7 @@ def run_pipeline(q):
 
 if run and query.strip():
     try:
-        run_pipeline(query.strip())
+        run_pipeline(query.strip(), refresh=force_refresh)
     except Exception as exc:
         st.error(f"Pipeline failed: {exc}")
 elif run:

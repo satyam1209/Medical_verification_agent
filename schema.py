@@ -24,3 +24,12 @@ class MedicalRecord(Base):
 
     def __repr__(self):
         return f"<MedicalRecord(id={self.id!r}, source={self.source!r}, type={self.type!r})>"
+
+
+class TopicIngestion(Base):
+    """Freshness tracker: when a topic's knowledge base last pulled from sources."""
+
+    __tablename__ = "topic_ingestion"
+
+    topic: Mapped[str] = mapped_column(String, primary_key=True)
+    last_ingested_at: Mapped[str] = mapped_column(String)

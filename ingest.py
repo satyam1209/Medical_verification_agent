@@ -9,6 +9,7 @@ import os
 import time
 import xml.etree.ElementTree as ET
 import zlib
+from datetime import datetime, timedelta
 
 import httpx
 from dotenv import load_dotenv
@@ -19,12 +20,13 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, PayloadSchemaType, PointStruct, VectorParams
 from fastembed import TextEmbedding
 
-from db_setup import init_db, get_session, now_str
-from schema import MedicalRecord
+from db_setup import get_session, init_db, now_str
+from schema import MedicalRecord, TopicIngestion
 
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 EMBED_DIM = 384
 QDRANT_COLLECTION = "medverify_kb"
+DEFAULT_TTL_HOURS = 24
 
 PUBMED_ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 PUBMED_EFETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
@@ -50,7 +52,7 @@ def _point_id(record_id, source):
 # -----------------------------
 # 1. PubMed
 # -----------------------------
-async def fetch_pubmed(client, query, max_results):
+async def fetch_pubmed(client, query, max_results, since=None):
     api_key = os.getenv("NCBI_API_KEY")
     email = os.getenv("NCBI_EMAIL", "test@example.com")
 
@@ -61,6 +63,9 @@ async def fetch_pubmed(client, query, max_results):
         "retmode": "json",
         "email": email,
     }
+    if since:
+        days = max(1, (datetime.now().date() - since).days)
+        esearch_params["reldate"] = str(days)
     if api_key:
         esearch_params["api_key"] = api_key
 
@@ -144,9 +149,17 @@ async def fetch_pubmed(client, query, max_results):
 # -----------------------------
 # 2. ClinicalTrials.gov
 # -----------------------------
-async def fetch_clinicaltrials(client, query, max_results):
+async def fetch_clinicaltrials(client, query, max_results, since=None):
     params = {"query.term": query, "pageSize": max_results}
+    if since:
+        params["filter.advanced"] = f"AREA[LastUpdatePostDate]RANGE[{since},MAX]"
+
     resp = await client.get(CLINICALTRIALS_URL, params=params)
+    if resp.status_code == 400 and since:
+        print("clinicaltrials: incremental filter rejected; falling back to "
+              "full fetch (dedup will skip existing)")
+        params.pop("filter.advanced", None)
+        resp = await client.get(CLINICALTRIALS_URL, params=params)
     resp.raise_for_status()
     data = resp.json()
 
@@ -212,8 +225,8 @@ async def _openfda_get_with_retry(client, params, attempts=OPENFDA_RETRIES):
     return resp
 
 
-async def fetch_openfda(client, query, max_results, reaction_filter=None):
-    async def _search(drug_q, reaction_q):
+async def fetch_openfda(client, query, max_results, reaction_filter=None, since=None):
+    async def _search(drug_q, reaction_q, date_range=None):
         if reaction_q:
             search = (
                 f'patient.drug.medicinalproduct:"{drug_q}"'
@@ -221,11 +234,22 @@ async def fetch_openfda(client, query, max_results, reaction_filter=None):
             )
         else:
             search = f'patient.drug.medicinalproduct:"{drug_q}"'
+        if date_range:
+            search += f" AND {date_range}"
         params = {"search": search, "limit": max_results}
         return await _openfda_get_with_retry(client, params)
 
+    date_range = None
+    if since:
+        compact = since.replace("-", "")
+        date_range = f"receivedate:[{compact}+TO+*]"
+
     drug_term = query
-    resp = await _search(query, reaction_filter)
+    resp = await _search(query, reaction_filter, date_range)
+    if resp.status_code == 400 and date_range:
+        print("openFDA: receivedate range rejected; refetching without "
+              "date window (dedup will skip existing)")
+        resp = await _search(query, reaction_filter, None)
 
     if resp.status_code == 404 and not reaction_filter and len(query.split()) >= 2:
         words = query.split()
@@ -328,15 +352,83 @@ def _embed_text(embedding_model, text):
     return next(embedding_model.embed([text])).tolist()
 
 
-async def ingest_topic(topic, max_results=10):
+def get_last_ingested(topic):
+    init_db()
+    session = get_session()
+    try:
+        row = session.get(TopicIngestion, topic)
+        return row.last_ingested_at if row else None
+    finally:
+        session.close()
+
+
+def set_last_ingested(topic, ts):
+    init_db()
+    session = get_session()
+    try:
+        row = session.get(TopicIngestion, topic)
+        if row:
+            row.last_ingested_at = ts
+        else:
+            session.add(TopicIngestion(topic=topic, last_ingested_at=ts))
+        session.commit()
+    finally:
+        session.close()
+
+
+async def ingest_topic(topic, max_results=10, ttl_hours=DEFAULT_TTL_HOURS, force_refresh=False):
+    """Ensure fresh evidence for a topic.
+
+    - Cached (ingested within ttl_hours, not force_refresh): fast path, no API
+      calls, no stale-snapshot risk because the snapshot is younger than TTL.
+    - Stale (older than TTL): incremental fetch of records published/updated
+      since last_ingested_at (PubMed reldate, Trial lastUpdatePostDate,
+      openFDA receivedate). Sources that reject the window fall back to a full
+      fetch; the existing dedup then skips already-stored records.
+    - force_refresh=True: bypass TTL and pull the full window from sources.
+    """
+    last = get_last_ingested(topic)
+    if last and not force_refresh:
+        try:
+            last_dt = datetime.fromisoformat(last)
+        except ValueError:
+            last_dt = None
+        if last_dt:
+            age = datetime.now() - last_dt
+            if age < timedelta(hours=ttl_hours):
+                print(f"Topic {topic!r} ingested {age.total_seconds()/3600:.1f}h ago "
+                      f"(TTL {ttl_hours}h) -> using cached knowledge base (fast path)")
+                return {
+                    "fetched": {"pubmed": 0, "clinicaltrials": 0, "openfda": 0},
+                    "inserted": 0,
+                    "upserted_qdrant": 0,
+                    "skipped": 0,
+                    "cached": True,
+                    "mode": "cached",
+                    "last_ingested_at": last,
+                }
+            since = last_dt.date()
+        else:
+            since = None
+    else:
+        since = None
+
+    if since:
+        print(f"Topic {topic!r} is stale -> incrementally fetching records "
+              f"published/updated since {since.isoformat()}")
+
+    return await _ingest_pipeline(topic, max_results, since)
+
+
+async def _ingest_pipeline(topic, max_results, since):
     qdrant_url = os.getenv("QDRANT_URL")
     qdrant_api_key = os.getenv("QDRANT_API_KEY")
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         results = await asyncio.gather(
-            fetch_pubmed(client, topic, max_results),
-            fetch_clinicaltrials(client, topic, max_results),
-            fetch_openfda(client, topic, max_results),
+            fetch_pubmed(client, topic, max_results, since),
+            fetch_clinicaltrials(client, topic, max_results, since),
+            fetch_openfda(client, topic, max_results, since=since),
             return_exceptions=True,
         )
     for idx, (source_name, result) in enumerate(
@@ -437,11 +529,18 @@ async def ingest_topic(topic, max_results=10):
     finally:
         session.close()
 
+    ts = now_str()
+    set_last_ingested(topic, ts)
+
     return {
         "fetched": counts,
         "inserted": inserted,
         "upserted_qdrant": upserted,
         "skipped": skipped,
+        "cached": False,
+        "mode": "incremental" if since else "full",
+        "since": since.isoformat() if since else None,
+        "last_ingested_at": ts,
     }
 
 

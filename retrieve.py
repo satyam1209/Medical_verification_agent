@@ -5,6 +5,7 @@ Run: python retrieve.py
 
 import asyncio
 import os
+import time
 
 from dotenv import load_dotenv
 
@@ -21,6 +22,7 @@ from evidence import characterize_record
 QDRANT_COLLECTION = "medverify_kb"
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 DISPLAY_TEXT_CHARS = 300
+SEARCH_CACHE_TTL_SECONDS = 300
 
 qdrant_url = os.getenv("QDRANT_URL")
 qdrant_api_key = os.getenv("QDRANT_API_KEY")
@@ -28,12 +30,30 @@ qdrant_api_key = os.getenv("QDRANT_API_KEY")
 client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
 embedding_model = TextEmbedding(model_name=EMBED_MODEL)
 
+_search_cache = {}
+
+
+def clear_search_cache():
+    """Discard cached search results (call after a forced re-ingestion)."""
+    _search_cache.clear()
+
 
 def _embed(text):
     return next(embedding_model.embed([text])).tolist()
 
 
 def search_kb(query: str, top_k: int = 5, source_filter: str = None, truncate: bool = True):
+    cache_key = (query, top_k, source_filter, truncate)
+    hit = _search_cache.get(cache_key)
+    if hit and (time.time() - hit[0]) < SEARCH_CACHE_TTL_SECONDS:
+        return hit[1]
+
+    results = _search_kb_uncached(query, top_k, source_filter, truncate)
+    _search_cache[cache_key] = (time.time(), results)
+    return results
+
+
+def _search_kb_uncached(query: str, top_k: int = 5, source_filter: str = None, truncate: bool = True):
     query_vector = _embed(query)
 
     query_filter = None
