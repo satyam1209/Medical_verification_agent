@@ -58,12 +58,19 @@ def run_pipeline(q, refresh=False):
         summary = asyncio.run(
             ingest_topic(q, max_results=15, force_refresh=refresh)
         )
+        diag_sources = [
+            ("pubmed", "PubMed"),
+            ("clinicaltrials", "ClinicalTrials.gov"),
+            ("openfda", "openFDA"),
+        ]
         if summary.get("cached"):
             st.write(
                 f"  - Topic knowledge base already current "
                 f"(ingested {summary['last_ingested_at']}); cached evidence used "
                 f"— data is younger than the {DEFAULT_TTL_HOURS}h TTL"
             )
+            for key, label in diag_sources:
+                st.write(f"  - {label}: **cached** (no API call)")
         else:
             since_note = (
                 f" (incremental since {summary['since']})"
@@ -71,8 +78,18 @@ def run_pipeline(q, refresh=False):
                 else " (full)"
             )
             st.write(f"  - Refreshing sources{since_note}")
-            for source_name, count in summary["fetched"].items():
-                st.write(f"  - {source_name}: fetched **{count}** records")
+            for key, label in diag_sources:
+                count = summary["fetched"].get(key, 0)
+                d = (summary.get("diagnostics") or {}).get(key, {})
+                reason = f"**{count}** records"
+                if d.get("error"):
+                    reason = f"**{count}** records — :red-badge[**error: {d['error']}**]"
+                elif count == 0:
+                    note = d.get("note") or "no matching records returned"
+                    reason = f"**{count}** records — *{note}*"
+                if d.get("fallback_used"):
+                    reason += f" · *fallback: {d['fallback_used']}*"
+                st.write(f"  - {label}: {reason}")
         st.write(
             f"  - Knowledge base state: {summary['inserted']} new, "
             f"{summary['skipped']} already present"

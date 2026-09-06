@@ -56,6 +56,15 @@ async def fetch_pubmed(client, query, max_results, since=None):
     api_key = os.getenv("NCBI_API_KEY")
     email = os.getenv("NCBI_EMAIL", "test@example.com")
 
+    diag = {
+        "source": "pubmed",
+        "error": None,
+        "note": None,
+        "http_code": None,
+        "fallback_used": None,
+        "fetched": 0,
+    }
+
     esearch_params = {
         "db": "pubmed",
         "term": query,
@@ -69,11 +78,25 @@ async def fetch_pubmed(client, query, max_results, since=None):
     if api_key:
         esearch_params["api_key"] = api_key
 
-    resp = await client.get(PUBMED_ESEARCH_URL, params=esearch_params)
-    resp.raise_for_status()
-    ids = resp.json().get("esearchresult", {}).get("idlist", [])
+    try:
+        resp = await client.get(PUBMED_ESEARCH_URL, params=esearch_params)
+        diag["http_code"] = resp.status_code
+        resp.raise_for_status()
+        ids = resp.json().get("esearchresult", {}).get("idlist", [])
+    except httpx.HTTPStatusError as e:
+        diag["error"] = f"HTTP {e.response.status_code} from PubMed eutils"
+        return [], diag
+    except Exception as e:
+        diag["error"] = f"{type(e).__name__}: {e} (PubMed eutils)"
+        return [], diag
+
     if not ids:
-        return []
+        if since:
+            diag["note"] = ("no new publications in the reldate window "
+                            f"(incremental refresh since {since})")
+        else:
+            diag["note"] = "PubMed returned 0 IDs for this search term"
+        return [], diag
 
     efetch_params = {
         "db": "pubmed",
@@ -84,9 +107,17 @@ async def fetch_pubmed(client, query, max_results, since=None):
     if api_key:
         efetch_params["api_key"] = api_key
 
-    resp = await client.get(PUBMED_EFETCH_URL, params=efetch_params)
-    resp.raise_for_status()
-    root = ET.fromstring(resp.content)
+    try:
+        resp = await client.get(PUBMED_EFETCH_URL, params=efetch_params)
+        diag["http_code"] = resp.status_code
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+    except httpx.HTTPStatusError as e:
+        diag["error"] = f"HTTP {e.response.status_code} from PubMed efetch"
+        return [], diag
+    except Exception as e:
+        diag["error"] = f"{type(e).__name__}: {e} (PubMed efetch)"
+        return [], diag
 
     records = []
     for article_el in root.findall(".//PubmedArticle"):
@@ -143,25 +174,51 @@ async def fetch_pubmed(client, query, max_results, since=None):
             })
         except Exception as e:
             print(f"WARNING: error parsing pubmed article: {e}")
-    return records
+    diag["fetched"] = len(records)
+    return records, diag
 
 
 # -----------------------------
 # 2. ClinicalTrials.gov
 # -----------------------------
 async def fetch_clinicaltrials(client, query, max_results, since=None):
+    diag = {
+        "source": "clinicaltrials",
+        "error": None,
+        "note": None,
+        "http_code": None,
+        "fallback_used": None,
+        "fetched": 0,
+    }
+
     params = {"query.term": query, "pageSize": max_results}
     if since:
         params["filter.advanced"] = f"AREA[LastUpdatePostDate]RANGE[{since},MAX]"
 
-    resp = await client.get(CLINICALTRIALS_URL, params=params)
-    if resp.status_code == 400 and since:
-        print("clinicaltrials: incremental filter rejected; falling back to "
-              "full fetch (dedup will skip existing)")
-        params.pop("filter.advanced", None)
+    try:
         resp = await client.get(CLINICALTRIALS_URL, params=params)
-    resp.raise_for_status()
-    data = resp.json()
+        diag["http_code"] = resp.status_code
+        if resp.status_code == 400 and since:
+            diag["fallback_used"] = ("incremental date filter rejected -> full "
+                                     "fetch used (dedup skipped existing)")
+            params.pop("filter.advanced", None)
+            resp = await client.get(CLINICALTRIALS_URL, params=params)
+            diag["http_code"] = resp.status_code
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPStatusError as e:
+        diag["error"] = (f"HTTP {e.response.status_code} from ClinicalTrials.gov "
+                         f"({resp.text[:200]})")
+        return [], diag
+    except Exception as e:
+        diag["error"] = f"{type(e).__name__}: {e} (ClinicalTrials.gov)"
+        return [], diag
+
+    studies = data.get("studies", [])
+    if not studies:
+        diag["note"] = ("API returned 200 OK but no studies matched this search "
+                        "term" + (" in the update window" if since else ""))
+        return [], diag
 
     records = []
     for study in data.get("studies", []):
@@ -203,7 +260,8 @@ async def fetch_clinicaltrials(client, query, max_results, since=None):
             })
         except Exception as e:
             print(f"WARNING: error parsing clinicaltrials study: {e}")
-    return records
+    diag["fetched"] = len(records)
+    return records, diag
 
 
 # -----------------------------
@@ -226,6 +284,15 @@ async def _openfda_get_with_retry(client, params, attempts=OPENFDA_RETRIES):
 
 
 async def fetch_openfda(client, query, max_results, reaction_filter=None, since=None):
+    diag = {
+        "source": "openfda",
+        "error": None,
+        "note": None,
+        "http_code": None,
+        "fallback_used": None,
+        "fetched": 0,
+    }
+
     async def _search(drug_q, reaction_q, date_range=None):
         if reaction_q:
             search = (
@@ -246,26 +313,41 @@ async def fetch_openfda(client, query, max_results, reaction_filter=None, since=
 
     drug_term = query
     resp = await _search(query, reaction_filter, date_range)
+    diag["http_code"] = resp.status_code
     if resp.status_code == 400 and date_range:
-        print("openFDA: receivedate range rejected; refetching without "
-              "date window (dedup will skip existing)")
+        diag["fallback_used"] = ("incremental receivedate range rejected -> "
+                                 "refetched without date window (dedup skipped "
+                                 "existing)")
         resp = await _search(query, reaction_filter, None)
+        diag["http_code"] = resp.status_code
 
     if resp.status_code == 404 and not reaction_filter and len(query.split()) >= 2:
         words = query.split()
         drug_term, reaction_term = words[0], " ".join(words[1:])
-        print(f"openFDA: no match for drug phrase '{query}'; falling back to "
-              f"drug='{drug_term}' AND reaction='{reaction_term}'")
+        diag["fallback_used"] = (f"no match for full drug phrase; fell back to "
+                                 f"drug='{drug_term}' + reaction='{reaction_term}'")
         resp = await _search(drug_term, reaction_term)
+        diag["http_code"] = resp.status_code
 
     if resp.status_code == 404:
         # Last-resort: drop the reaction clause and search the drug alone so
         # we still return adverse-event data instead of failing the whole source
-        print(f"openFDA: combined query still 404; falling back to drug-only "
-              f"search for '{drug_term}'")
+        diag["fallback_used"] = (f"combined query still 404; fell back to "
+                                 f"drug-only search for '{drug_term}'")
         resp = await _search(drug_term, None)
+        diag["http_code"] = resp.status_code
 
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = f": {resp.json().get('error', {}).get('message', resp.text[:150])}"
+        except Exception:
+            detail = f": {resp.text[:150]}"
+        diag["error"] = (f"HTTP {resp.status_code} from openFDA API{detail} "
+                         f"(note: openFDA returns 404 when NO adverse-event "
+                         f"reports match the search)")
+        return [], diag
+
     data = resp.json()
 
     records = []
@@ -342,7 +424,11 @@ async def fetch_openfda(client, query, max_results, reaction_filter=None, since=
             })
         except Exception as e:
             print(f"WARNING: error parsing openfda report: {e}")
-    return records
+    diag["fetched"] = len(records)
+    if not records and not diag["error"] and resp.status_code == 200:
+        diag["note"] = ("openFDA returned 200 OK but the report bodies were "
+                        "empty/unparseable")
+    return records, diag
 
 
 # -----------------------------
@@ -406,6 +492,12 @@ async def ingest_topic(topic, max_results=10, ttl_hours=DEFAULT_TTL_HOURS, force
                     "cached": True,
                     "mode": "cached",
                     "last_ingested_at": last,
+                    "diagnostics": {
+                        src: {"source": src, "error": None, "note": "cached KB "
+                              "(within TTL) — no API calls made",
+                              "http_code": None, "fallback_used": None, "fetched": 0}
+                        for src in ("pubmed", "clinicaltrials", "openfda")
+                    },
                 }
             since = last_dt.date()
         else:
@@ -431,12 +523,20 @@ async def _ingest_pipeline(topic, max_results, since):
             fetch_openfda(client, topic, max_results, since=since),
             return_exceptions=True,
         )
+    diagnostics = {}
     for idx, (source_name, result) in enumerate(
         zip(("pubmed", "clinicaltrials", "openfda"), results)
     ):
         if isinstance(result, Exception):
+            diag = {"source": source_name, "error": f"{type(result).__name__}: {result}",
+                    "note": None, "http_code": None, "fallback_used": None, "fetched": 0}
+            diagnostics[source_name] = diag
             print(f"WARNING: {source_name} fetch failed and was skipped: {result}")
             results[idx] = []
+        else:
+            records, diag = result
+            diagnostics[source_name] = diag
+            results[idx] = records
     fetched = [record for sublist in results for record in sublist]
 
     counts = {
@@ -541,6 +641,7 @@ async def _ingest_pipeline(topic, max_results, since):
         "mode": "incremental" if since else "full",
         "since": since.isoformat() if since else None,
         "last_ingested_at": ts,
+        "diagnostics": diagnostics,
     }
 
 
