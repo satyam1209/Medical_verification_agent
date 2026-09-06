@@ -7,3 +7,4 @@ fastembed
 sqlalchemy
 httpx
 groq
+streamlit

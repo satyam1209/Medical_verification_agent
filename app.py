@@ -1,0 +1,103 @@
+"""Streamlit UI for the medical evidence verification & grading pipeline.
+
+Runs the full pipeline with visible progress:
+  1. Searches supported datasets (PubMed, ClinicalTrials.gov, openFDA)
+     and reports how many records each one returned
+  2. Retrieves the most relevant evidence from the knowledge base
+  3. Re-checks retraction / freshness of the retrieved pubs
+  4. Assembles the numbered evidence context
+  5. Streams the final LLM answer
+
+Run: streamlit run app.py
+"""
+
+import asyncio
+import contextlib
+import io
+
+import streamlit as st
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from ingest import ingest_topic
+from retrieve import search_kb
+from synthesize import build_user_message, synthesize_answer_stream
+
+st.set_page_config(page_title="MedVerify", page_icon=":medical_symbol:", layout="centered")
+
+st.title("MedVerify — Medical Evidence Verifier")
+st.caption(
+    "Question the evidence, not the echo. Sources: PubMed, ClinicalTrials.gov, "
+    "openFDA adverse event reports. Answers are grounded strictly in the "
+    "ingested evidence and graded by confidence."
+)
+
+query = st.text_input(
+    "Ask a medical question",
+    placeholder="e.g. does metformin cause vitamin B12 deficiency?",
+)
+run = st.button("Run verification", type="primary", use_container_width=True)
+
+
+def step(status_box, text):
+    status_box.write(f"- {text}")
+
+
+def run_pipeline(q):
+    with st.status("Running the evidence pipeline…", expanded=True) as status:
+
+        # ---- STEP 1: ingestion ------------------------------------------------
+        st.write("**1. Searching datasets**")
+        summary = asyncio.run(ingest_topic(q, max_results=15))
+        for source_name, count in summary["fetched"].items():
+            st.write(f"  - {source_name}: fetched **{count}** records")
+        st.write(
+            f"  - Knowledge base update complete "
+            f"(inserted {summary['inserted']}, "
+            f"skipped existing {summary['skipped']})"
+        )
+
+        # ---- STEP 2: retrieval ------------------------------------------------
+        st.write("**2. Retrieving most relevant evidence**")
+        stdout_capture = io.StringIO()
+        with contextlib.redirect_stdout(stdout_capture):
+            results = search_kb(q, top_k=8, truncate=False)
+        st.write(f"  - Retrieved **{len(results)}** evidence items from the KB")
+
+        retraction_warnings = [
+            line for line in stdout_capture.getvalue().splitlines()
+            if line.startswith("WARNING: Excluded retracted paper")
+        ]
+        for warning in retraction_warnings:
+            st.write(f"  - :red-badge[**{warning}**]")
+
+        # ---- STEP 3: freshness / retraction review ----------------------------
+        st.write("**3. Reviewing freshness of retrieved evidence**")
+        for r in results:
+            pub = r.get("publish_date") or "unknown date"
+            st.write(
+                f"  - [{r['source']}] {r['freshness_label']} "
+                f"({pub}) | {r['title'][:70]}"
+            )
+
+        # ---- STEP 4: context assembly -----------------------------------------
+        st.write("**4. Assembling evidence context (numbered sources)**")
+        user_msg = build_user_message(q, top_k=8)
+        num_sources = user_msg.split("---\n")[0].count("[Source ")
+        st.write(f"  - Context ready with **{num_sources}** numbered sources")
+
+        status.update(label="Synthesis complete", state="complete", expanded=False)
+
+    # ---- STEP 5: streaming model response --------------------------------------
+    st.write("**5. Model response**")
+    st.write_stream(synthesize_answer_stream(q, top_k=8))
+
+
+if run and query.strip():
+    try:
+        run_pipeline(query.strip())
+    except Exception as exc:
+        st.error(f"Pipeline failed: {exc}")
+elif run:
+    st.warning("Please enter a question first.")

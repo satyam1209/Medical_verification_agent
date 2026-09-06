@@ -65,9 +65,13 @@ def build_context(query: str, top_k: int = 8):
     return "\n\n".join(entries)
 
 
+def build_user_message(query: str, top_k: int = 8):
+    context = build_context(query, top_k=top_k)
+    return f"{context}\n\n---\nQuestion: {query}"
+
+
 def synthesize_answer(query: str):
-    context = build_context(query)
-    user_msg = f"{context}\n\n---\nQuestion: {query}"
+    user_msg = build_user_message(query)
 
     print("Sending context to Groq LLM...")
     response = client.chat.completions.create(
@@ -80,6 +84,27 @@ def synthesize_answer(query: str):
         max_tokens=2048,
     )
     return response.choices[0].message.content
+
+
+def synthesize_answer_stream(query: str, top_k: int = 8):
+    """Yield answer text chunks as Groq streams them back."""
+    user_msg = build_user_message(query, top_k=top_k)
+
+    print("Sending context to Groq LLM (streaming)...")
+    stream = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg},
+        ],
+        temperature=0.2,
+        max_tokens=2048,
+        stream=True,
+    )
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta
 
 
 if __name__ == "__main__":

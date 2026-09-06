@@ -437,6 +437,13 @@ async def ingest_topic(topic, max_results=10):
     finally:
         session.close()
 
+    return {
+        "fetched": counts,
+        "inserted": inserted,
+        "upserted_qdrant": upserted,
+        "skipped": skipped,
+    }
+
 
 async def main():
     start = time.time()
