@@ -217,10 +217,87 @@ def parse_pico(query):
     return pico
 
 
-def evidence_profile(results):
+_STOPWORDS = {"is", "of", "in", "for", "with", "the", "and", "on", "vs", "versus", "to", "a"}
+
+_SURROGATE_RE = re.compile(
+    r"biomarker|surrogate|hba1c|hemoglobin|labs?|cholesterol|ldl|hdl|"
+    r"blood pressure|bone density|cancer stage|tumor|tumour|psa|"
+    r"viral load|cd4|creatinine|egfr|bmd|marker",
+    re.IGNORECASE,
+)
+_SURVIVAL_RE = re.compile(r"mortality|death|survival|lethal|fatality", re.IGNORECASE)
+_EVENT_RE = re.compile(r"fracture|infarction|stroke|event|bleed|admission|diagnosis", re.IGNORECASE)
+
+
+def outcome_category(outcome):
+    if not outcome:
+        return "unknown (outcome not parsed from question)"
+    if _SURVIVAL_RE.search(outcome):
+        return "mortality/survival (clinical endpoint)"
+    if _SURROGATE_RE.search(outcome):
+        return "surrogate / biomarker (NOT a clinical endpoint)"
+    if _EVENT_RE.search(outcome):
+        return "observed clinical event"
+    return "clinical outcome (no strong surrogate signal)"
+
+
+def pico_component_coverage(pico, results):
+    """Keyword-overlap hint: does ANY retrieved source even touch each PICO
+    component value?  None => component not parsed from the question."""
+    hay = " ".join((r.get("title") or "") + " " + (r.get("text") or "") for r in results)
+    hay_lower = hay.lower()
+    coverage = {}
+    for comp, val in pico.items():
+        if not val:
+            coverage[comp] = None
+            continue
+        tokens = [
+            t for t in re.split(r"\W+", val.lower())
+            if len(t) >= 3 and t not in _STOPWORDS
+        ]
+        if not tokens:
+            coverage[comp] = None
+            continue
+        coverage[comp] = any(t in hay_lower for t in tokens)
+    return coverage
+
+
+def completeness_judgement(pico, coverage, n_results, distinct_designs):
+    """Rule-of-thumb retrieval-completeness hint for the prompt.  The model must
+    treat this as a hint about RETRIEVAL, not about the strength of the evidence
+    itself."""
+    outcomes_missing = coverage.get("outcome") is False
+    populations_missing = coverage.get("population") is False
+    if n_results == 0:
+        return ("ZERO sources retrieved — the evidence base for this PICO is not "
+                "covered by this search at all; retrieval is clearly incomplete.")
+    reasons = []
+    if outcomes_missing:
+        reasons.append("no retrieved source explicitly connects to the question's "
+                       "outcome")
+    if populations_missing:
+        reasons.append("no retrieved source explicitly covers the question's "
+                       "population")
+    if n_results <= 2:
+        reasons.append("only %d source(s) retrieved" % n_results)
+    if not distinct_designs:
+        reasons.append("no study-design type could be classified")
+    if reasons:
+        return ("Retrieval is LIKELY INCOMPLETE for this PICO: " + "; ".join(reasons) +
+                ". This is a retrieval/completeness limitation and must NOT be "
+                "treated as evidence that better evidence does not exist, nor "
+                "automatically demote the overall conclusion to weak.")
+    return ("Retrieval appears to touch every parsed PICO component and includes "
+            "classifiable designs; completeness looks reasonable. Note: absence of "
+            "contradictory evidence does NOT by itself mean the evidence is "
+            "consistent unless coverage is judged comprehensive.")
+
+
+def evidence_profile(results, pico=None):
     """Build a compact EBM profile of the retrieved set for the LLM prompt."""
     lines = []
     designs = [r.get("design") for r in results]
+    distinct_designs = sorted(set(designs))
     profile = {
         "n": len(results),
         "designs": designs,
@@ -246,6 +323,21 @@ def evidence_profile(results):
         f"Safety vs efficacy: {profile['safety']} source(s) are safety/adverse-event "
         f"related."
     )
+
+    if pico:
+        coverage = pico_component_coverage(pico, results)
+        covered_str = ", ".join(
+            f"{k}={'covered' if v else 'NO source touches it' if v is False else 'n/a'}"
+            for k, v in coverage.items()
+        )
+        outcome_cat = outcome_category(pico.get("outcome"))
+        lines.append(f"PICO component coverage (keyword hint): {covered_str}.")
+        lines.append(f"Question outcome type: {outcome_cat}. Do not equate a "
+                     f"surrogate/intermediate outcome with the requested clinical "
+                     f"outcome, and do not report modeled/estimated effects as "
+                     f"observed effects.")
+        lines.append(completeness_judgement(pico, coverage, len(results), distinct_designs))
+
     return "\n".join(lines)
 
 

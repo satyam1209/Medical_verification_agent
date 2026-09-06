@@ -23,6 +23,7 @@ load_dotenv()
 from ingest import DEFAULT_TTL_HOURS, ingest_topic
 from retrieve import clear_search_cache, search_kb
 from synthesize import build_user_message, synthesize_answer_stream
+from evidence import outcome_category, pico_component_coverage, parse_pico
 
 st.set_page_config(page_title="MedVerify", page_icon=":medical_symbol:", layout="centered")
 
@@ -107,6 +108,20 @@ def run_pipeline(q, refresh=False):
         user_msg = build_user_message(q, top_k=8)
         num_sources = user_msg.split("---\n")[0].count("[Source ")
         st.write(f"  - Context ready with **{num_sources}** numbered sources")
+
+        pico = parse_pico(q)
+        coverage = pico_component_coverage(pico, results)
+        pico_line = "PICO: " + ", ".join(
+            f"{k}={v or 'n/a'}" for k, v in pico.items()
+        )
+        cover_line = "Coverage (keyword hint): " + ", ".join(
+            f"{k}={'touched' if v else 'NO source' if v is False else 'n/a'}"
+            for k, v in coverage.items()
+        )
+        st.write(
+            f"  - {pico_line}  |  {cover_line}\n"
+            f"  - Outcome type: {outcome_category(pico.get('outcome'))}"
+        )
 
         status.update(label="Synthesis complete", state="complete", expanded=False)
 

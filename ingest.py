@@ -241,7 +241,7 @@ async def fetch_openfda(client, query, max_results, reaction_filter=None, since=
 
     date_range = None
     if since:
-        compact = since.replace("-", "")
+        compact = since.strftime("%Y%m%d")
         date_range = f"receivedate:[{compact}+TO+*]"
 
     drug_term = query

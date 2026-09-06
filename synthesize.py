@@ -23,20 +23,26 @@ EBM Principles you MUST follow:
 2. Weigh evidence by study design hierarchy, not by raw source count: RCTs & systematic reviews/meta-analyses > prospective cohort > retrospective cohort/case-control > case reports/narrative reviews/adverse-event reports.
 3. Do NOT treat overlapping or redundant analyses as independent evidence; if two sources are the same or overlapping meta-analyses/trials, count them as ONE line of evidence and say so.
 4. Report effect size with 95% CI, sample size, and (when given) absolute measures such as NNT/ARR. Never invent numbers not in the excerpt.
-5. Distinguish relative from absolute effects, composite from individual endpoints, and surrogate from clinical outcomes.
+5. Distinguish relative from absolute effects, composite from individual endpoints, and surrogate from clinical outcomes. survival != mortality; stage at diagnosis != mortality; surrogate endpoint != clinical endpoint; modeled/estimated effects != observed effects.
 6. Explicitly separate EFFICACY evidence from SAFETY evidence; an adverse-event report supports a risk claim, not a benefit claim.
 7. In observational studies (cohort, case-control, cross-sectional, AE reports) state association-to-causation limitations; do not claim causation.
 8. Report heterogeneity (I-squared), risk of bias, and indirectness IF the excerpt states them; otherwise state they are unavailable.
-9. Do not generalize beyond the study population, dose, formulation, drug, or endpoint presented in the excerpts.
+9. Do not generalize beyond the study population, dose, formulation, drug, or endpoint presented in the excerpts; explicitly LABEL any extrapolation you are asked to make.
 10. Explicitly state contradictory or negative evidence when present; do not cherry-pick supporting sources.
-11. Base your final confidence label on evidence quality, consistency, precision (CIs), directness, and limitations — NOT on source count alone.
-12. Make the final conclusion NO STRONGER or BROADER than the underlying evidence.
+11. Confuse NOTHING between the retrieved slice and the overall evidence base:
+    - Do NOT downgrade the certainty of the overall scientific conclusion just because high-quality evidence was not among the retrieved sources.
+    - Absence of an RCT in the retrieved sources does NOT mean no RCT evidence exists.
+    - Do NOT interpret "no contradictory evidence found" as "evidence is consistent" unless retrieval is judged comprehensive.
+    - The final confidence label reflects the TOTAL relevant evidence base available, not merely the number or quality of the retrieved sources.
+12. Make the final conclusion NO STRONGER or BROADER than the underlying evidence. Evidence quality, directness, completeness, and certainty are separate axes — assess each.
 
-Output format:
-- Start with a 1-line PICO restatement of the question.
-- Body: cite [Source N] for every factual claim.
-- Before the confidence label, list: (a) number of INDEPENDENT evidence lines with their designs; (b) consistency/direction across sources; (c) precision (which sources report 95% CIs) and directness; (d) limitations (heterogeneity, bias, indirectness) if reported; (e) efficacy vs safety split.
-- End with exactly one of: "Confidence: STRONG EVIDENCE", "Confidence: MODERATE EVIDENCE", or "Confidence: WEAK EVIDENCE", followed by a short justification in parentheses based on (a)-(e)."""
+Output format (MUST follow exactly):
+- "PICO restatement:" one line.
+- "What the retrieved sources show:" a summary citing [Source N], including designs and any reported effect sizes/CIs, negatives, and safety vs efficacy split.
+- "Retrieval completeness:" one short paragraph. If the retrieved set does not adequately cover the PICO (sparse sources, missing population/outcome coverage, missing expected evidence types), state verbatim: "The retrieved evidence is incomplete for this question." and treat this as a retrieval/completeness limitation — do NOT automatically conclude the evidence itself is weak. If coverage looks adequate, say so, and note whether the absence of contradictory evidence can be taken as consistency.
+- "What the overall evidence base supports:" your synthesis of the best available evidence base for this PICO, explicitly flagging where you are extrapolating beyond the retrieved sources (population, dose, formulation, intervention, setting, endpoint) and where surrogate endpoints are used in place of clinical ones.
+- Confidence basis (a)-(e) as before.
+- End with exactly one of: "Confidence: STRONG EVIDENCE", "Confidence: MODERATE EVIDENCE", or "Confidence: WEAK EVIDENCE", followed by a short parenthetical based on quality, consistency, precision, directness, AND completeness."""
 
 GROQ_MODEL = "openai/gpt-oss-120b"
 
@@ -130,8 +136,8 @@ def build_user_message(query: str, top_k: int = 8):
             )
         context += "\n\n" + "\n".join(override_lines)
 
-    profile = evidence_profile(results)
     pico = parse_pico(query)
+    profile = evidence_profile(results, pico=pico)
     pico_str = (
         f"PICO: Population={pico['population'] or 'not stated'}; "
         f"Intervention={pico['intervention'] or 'not stated'}; "
